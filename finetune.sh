@@ -21,6 +21,7 @@ OVERRIDES="${OVERRIDES:-}"
 
 # Submit from the starter directory. Set up this venv BEFORE submitting.
 cd "${LS_SUBCWD:?Submit using bsub from the starter directory}"
+module load python3/3.12.11
 source "${CYP_VENV:-$PWD/.venv}/bin/activate"
 export OMP_NUM_THREADS=4
 export MKL_NUM_THREADS=4
