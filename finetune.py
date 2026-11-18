@@ -74,6 +74,11 @@ def predict(model, loader, task, mean, std):
         p = p * std + mean if task == 'regression' else p.sigmoid()
         out.append(p.float().cpu().numpy())
     values = np.concatenate(out)
+    # A model may evaluate each molecule several times (e.g. multiple conformers) and
+    # fold those repeats back into one prediction per row.
+    fold = getattr(model, 'fold_predictions', None)
+    if fold is not None:
+        values = fold(values)
     if not np.isfinite(values).all():
         raise RuntimeError('Nonfinite predictions')
     return values

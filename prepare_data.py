@@ -24,15 +24,19 @@ TASK_LABELS = {'regression': REG, 'classification': CLS}
 
 
 def conformer(job):
-    key, smiles, folder, seed = job
+    key, smiles, folder, seed, n_conformers = job
     path = Path(folder) / f'{key}.npz'
     if path.exists():
         return key, ''
     try:
         # Use the original SMILES and the upstream defaults, without retries or centering.
-        sample = smiles_to_samples(smiles, num_conformers=1, seed=seed, mmff_max_iters=500)[0]
-        np.savez_compressed(path, z=sample['atomic_numbers'].numpy(),
-                            pos=sample['node_coordinates'].numpy())
+        samples = smiles_to_samples(smiles, num_conformers=n_conformers, seed=seed,
+                                    mmff_max_iters=500)
+        if not samples:
+            raise ValueError('No conformers generated')
+        # Positions are stored as [conformers, atoms, 3]; atoms are shared across conformers.
+        np.savez_compressed(path, z=samples[0]['atomic_numbers'].numpy(),
+                            pos=np.stack([s['node_coordinates'].numpy() for s in samples]))
         return key, ''
     except Exception as exc:
         return key, str(exc)
@@ -70,20 +74,23 @@ def main():
     p.add_argument('--out', type=Path, default=Path('data'))
     p.add_argument('--raw-dir', type=Path, help='Folder containing the two labelled CSVs')
     p.add_argument('--workers', type=int, default=4)
+    p.add_argument('--conformers', type=int, default=1, help='Conformers generated per molecule')
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--val-fraction', type=float, default=.15)
     p.add_argument('--test-fraction', type=float, default=.15)
     p.add_argument('--limit', type=int, help='Small preparation smoke test only: first N rows')
     args = p.parse_args()
-    if (args.workers < 1 or not 0 <= args.seed < 2**31 - 1 or
+    if (args.workers < 1 or args.conformers < 1 or not 0 <= args.seed < 2**31 - 1 or
         min(args.val_fraction, args.test_fraction) <= 0 or
         args.val_fraction + args.test_fraction >= 1 or
         (args.limit is not None and args.limit < 3)):
-        p.error('Use positive fractions summing to < 1, workers >= 1, limit >= 3 and a valid seed')
+        p.error('Use positive fractions summing to < 1, workers >= 1, conformers >= 1, '
+                'limit >= 3 and a valid seed')
     args.out.mkdir(parents=True, exist_ok=True)
     config = {'data_revision': DATA_REVISION, 'seed': args.seed,
               'val_fraction': args.val_fraction, 'test_fraction': args.test_fraction,
-              'limit': args.limit, 'rdkit': rdBase.rdkitVersion,
+              'limit': args.limit, 'num_conformers': args.conformers,
+              'rdkit': rdBase.rdkitVersion,
               'protocol': 'atom-jepa-' + ATOM_JEPA_VERSION}
     manifest_path = args.out / 'manifest.json'
     if manifest_path.exists() and json.loads(manifest_path.read_text())['config'] != config:
@@ -127,7 +134,7 @@ def main():
     folder = args.out / 'conformers'
     folder.mkdir(exist_ok=True)
     unique = frame.drop_duplicates('key')
-    work = [(r.key, r.SMILES, str(folder), args.seed) for r in unique.itertuples()]
+    work = [(r.key, r.SMILES, str(folder), args.seed, args.conformers) for r in unique.itertuples()]
     results = []
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         for i, result in enumerate(pool.map(conformer, work), 1):

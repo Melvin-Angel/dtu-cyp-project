@@ -11,6 +11,8 @@ model:
   freeze_encoder: false   # true trains only the readout head
   encoder_lr: 1.0e-5
   readout_lr: 1.0e-3
+  sample_conformers: false  # Training: draw a random conformer each time a molecule is seen
+  eval_conformers: 1        # Validation/test: average predictions over this many conformers
 
 train:
   epochs: 20

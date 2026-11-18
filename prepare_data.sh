@@ -17,4 +17,8 @@ export MKL_NUM_THREADS=1
 
 # Download labelled training tables, generate conformers, and split train/val/test.
 # Rerunning reuses existing conformer files.
-python -u prepare_data.py --out data --workers 8 --seed 42
+# OUT selects the output directory and CONFORMERS the number of conformers per molecule:
+#   bsub -env "OUT=data_mc, CONFORMERS=10" < prepare_data.sh
+# Changing CONFORMERS requires a NEW OUT directory; the manifest guard enforces this.
+python -u prepare_data.py --out "${OUT:-data}" --workers 8 --seed 42 \
+    --conformers "${CONFORMERS:-1}"
