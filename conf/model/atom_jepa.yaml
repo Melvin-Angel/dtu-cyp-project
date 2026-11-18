@@ -8,7 +8,8 @@ model:
   type: atom_jepa
   checkpoint: molecules   # Released encoder name or local checkpoint path
   precision: fp32         # bf16 is faster on L40s/A100 but emulated (slower) on V100
-  freeze_encoder: false   # true trains only the readout head
+  freeze_encoder: false   # true trains only the readout head, for the whole run
+  unfreeze_epoch: 0       # 0 disables staging; N > 1 trains the readout alone until epoch N
   encoder_lr: 1.0e-5
   readout_lr: 1.0e-3
   sample_conformers: false  # Training: draw a random conformer each time a molecule is seen

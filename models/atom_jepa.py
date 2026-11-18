@@ -41,14 +41,25 @@ class AtomJEPAModel(nn.Module):
         self.cfg, self.folder = cfg, data_dir / 'conformers'
         self.encoder = AtomJEPA.from_pretrained(cfg.checkpoint, device=device,
                                                 precision=cfg.precision, cuequivariance=False)
-        self.encoder.set_grad_checkpointing(not cfg.freeze_encoder)
-        self.encoder.requires_grad_(not cfg.freeze_encoder)
         self.readout = build_readout(readout, self.encoder.embedding_dim, n_targets).to(self.encoder.device)
         # Conformer handling; the defaults reproduce single-conformer behaviour.
         self.sample_conformers = bool(cfg.get('sample_conformers', False))
         self.eval_conformers = int(cfg.get('eval_conformers', 1))
         if self.eval_conformers < 1:
             raise ValueError('model.eval_conformers must be at least 1')
+        # Staged freezing: train the readout alone until unfreeze_epoch, then both.
+        # 0 or 1 disables staging; freeze_encoder=true keeps the encoder frozen throughout.
+        self.unfreeze_epoch = int(cfg.get('unfreeze_epoch', 0))
+        if self.unfreeze_epoch < 0:
+            raise ValueError('model.unfreeze_epoch must not be negative')
+        if cfg.freeze_encoder and self.unfreeze_epoch > 1:
+            raise ValueError('Set model.freeze_encoder=false to use model.unfreeze_epoch')
+        self._set_encoder_trainable(not cfg.freeze_encoder and self.unfreeze_epoch <= 1)
+
+    def _set_encoder_trainable(self, trainable):
+        self._encoder_trainable = trainable
+        self.encoder.requires_grad_(trainable)
+        self.encoder.set_grad_checkpointing(trainable)
 
     @property
     def device(self):
@@ -56,9 +67,27 @@ class AtomJEPAModel(nn.Module):
 
     def train(self, mode=True):
         super().train(mode)
-        if self.cfg.freeze_encoder:
-            self.encoder.eval()
+        if not self._encoder_trainable:
+            self.encoder.eval()  # No dropout while the encoder is held fixed.
         return self
+
+    def on_epoch_start(self, epoch, optimizer):
+        """Release the encoder at unfreeze_epoch by restoring its learning rate."""
+        if self.cfg.freeze_encoder or self.unfreeze_epoch <= 1:
+            return
+        trainable = epoch >= self.unfreeze_epoch
+        if trainable == self._encoder_trainable:
+            return
+        self._set_encoder_trainable(trainable)
+        # Identify the encoder group by parameter identity rather than by position.
+        first = next(self.encoder.parameters())
+        for group in optimizer.param_groups:
+            if any(p is first for p in group['params']):
+                group['lr'] = self.cfg.encoder_lr if trainable else 0.
+                break
+        else:
+            raise RuntimeError('Encoder parameters are not in the optimizer')
+        print(f'Encoder unfrozen at epoch {epoch}', flush=True)
 
     def fit_preprocessing(self, train):
         pass
@@ -80,7 +109,11 @@ class AtomJEPAModel(nn.Module):
     def param_groups(self):
         groups = [{'params': list(self.readout.parameters()), 'lr': self.cfg.readout_lr}]
         if not self.cfg.freeze_encoder:
-            groups.append({'params': list(self.encoder.parameters()), 'lr': self.cfg.encoder_lr})
+            # During a staged warm-up the encoder is present but held at lr 0, so that
+            # on_epoch_start can release it without rebuilding the optimizer. AdamW scales
+            # both the step and its decoupled weight decay by lr, so lr 0 means no update.
+            lr = self.cfg.encoder_lr if self._encoder_trainable else 0.
+            groups.append({'params': list(self.encoder.parameters()), 'lr': lr})
         return groups
 
     def forward(self, batch):
